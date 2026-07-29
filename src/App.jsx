@@ -46,6 +46,7 @@ export default class App extends Component {
       price: last.price != null ? last.price : 183333,
       description: last.description || DEFAULT_DESCRIPTION,
       fitScale: 0.45,
+      narrow: typeof window !== 'undefined' && window.innerWidth < 640,
       toast: null,
     }
     this.invRef = createRef()
@@ -66,10 +67,10 @@ export default class App extends Component {
     this.fit = () => {
       const s = Math.min(
         (window.innerHeight - 190) / 1123,
-        (window.innerWidth - 80) / 794,
+        (window.innerWidth - 40) / 794,
         0.85
       )
-      this.setState({ fitScale: Math.max(0.25, s) })
+      this.setState({ fitScale: Math.max(0.25, s), narrow: window.innerWidth < 640 })
     }
     window.addEventListener('resize', this.fit)
     this.fit()
@@ -220,17 +221,33 @@ export default class App extends Component {
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
-            padding: '18px 32px',
+            gap: 12,
+            padding: s.narrow ? '14px 16px' : '18px 32px',
           }}
         >
-          <div style={{ fontSize: 14, fontWeight: 600 }}>
+          <button
+            className="nav-back"
+            onClick={() => this.setState({ step: 1 })}
+            title="Back to start"
+            style={{
+              flex: 'none',
+              border: 'none',
+              background: 'transparent',
+              cursor: 'pointer',
+              fontSize: 14,
+              fontWeight: 600,
+              padding: 0,
+              textAlign: 'left',
+            }}
+          >
             Invoice <span style={{ fontWeight: 400, color: '#8a7c6b' }}>#{invNoPad}</span>
-          </div>
+          </button>
           <div style={{ display: 'flex', alignItems: 'center', gap: 0 }}>
             {steps.map((st) => (
               <button
                 key={st.n}
                 onClick={st.go}
+                title={st.label}
                 style={{
                   display: 'flex',
                   alignItems: 'center',
@@ -238,7 +255,7 @@ export default class App extends Component {
                   border: 'none',
                   background: 'transparent',
                   cursor: 'pointer',
-                  padding: '6px 14px',
+                  padding: s.narrow ? '6px 6px' : '6px 14px',
                 }}
               >
                 <span
@@ -246,6 +263,7 @@ export default class App extends Component {
                     width: 24,
                     height: 24,
                     borderRadius: '50%',
+                    flex: 'none',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
@@ -258,13 +276,15 @@ export default class App extends Component {
                 >
                   {st.n}
                 </span>
-                <span style={{ fontSize: 13, color: st.labelColor, fontWeight: st.weight }}>
-                  {st.label}
-                </span>
+                {!s.narrow && (
+                  <span style={{ fontSize: 13, color: st.labelColor, fontWeight: st.weight }}>
+                    {st.label}
+                  </span>
+                )}
               </button>
             ))}
           </div>
-          <div style={{ width: 110 }} />
+          {!s.narrow && <div style={{ width: 110 }} />}
         </div>
 
         {/* STEP 1 — Client */}
@@ -464,7 +484,7 @@ export default class App extends Component {
                 </div>
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: s.narrow ? '1fr' : '1fr 1fr', gap: 14 }}>
                 <div style={card}>
                   <label style={lbl}>Invoice number</label>
                   <div
@@ -575,7 +595,7 @@ export default class App extends Component {
                 )}
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: s.narrow ? '1fr' : '1fr 1fr', gap: 14 }}>
                 <div style={card}>
                   <label style={lbl}>Amount</label>
                   <div
