@@ -1,10 +1,13 @@
-// Serverless client store backed by a single Vercel Blob JSON doc.
-// GET  -> returns the clients array (or [])
-// PUT  -> overwrites the whole clients array
-// Cross-device sync: every browser reads/writes this one blob.
-import { list, put } from '@vercel/blob'
+// Serverless client store backed by Vercel Blob.
+// GET -> newest clients snapshot (or [])
+// PUT -> writes a NEW immutable snapshot, prunes older ones.
+//
+// Why a new blob per write instead of overwriting one path: overwriting a
+// fixed public URL suffers ~20s CDN read-after-write lag. Unique URLs are
+// immutable, so every read is fresh — no stale reads, no lost writes.
+import { list, put, del } from '@vercel/blob'
 
-const PATH = 'clients.json'
+const PREFIX = 'clients-'
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*')
@@ -14,11 +17,10 @@ export default async function handler(req, res) {
 
   try {
     if (req.method === 'GET') {
-      const { blobs } = await list({ prefix: PATH })
-      const hit = blobs.find((b) => b.pathname === PATH)
-      if (!hit) return res.status(200).json([])
-      // cache-bust so we never read a stale copy right after a write
-      const r = await fetch(hit.url + '?t=' + Date.now(), { cache: 'no-store' })
+      const { blobs } = await list({ prefix: PREFIX })
+      if (!blobs.length) return res.status(200).json([])
+      const newest = blobs.sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt))[0]
+      const r = await fetch(newest.url, { cache: 'no-store' })
       const data = await r.json().catch(() => [])
       return res.status(200).json(Array.isArray(data) ? data : [])
     }
@@ -26,13 +28,19 @@ export default async function handler(req, res) {
     if (req.method === 'PUT' || req.method === 'POST') {
       const body = typeof req.body === 'string' ? JSON.parse(req.body || '[]') : req.body
       const clients = Array.isArray(body) ? body : (body && body.clients) || []
-      const blob = await put(PATH, JSON.stringify(clients), {
+      const blob = await put(PREFIX + 'snapshot.json', JSON.stringify(clients), {
         access: 'public',
         contentType: 'application/json',
-        allowOverwrite: true,
-        addRandomSuffix: false,
-        cacheControlMaxAge: 0,
+        addRandomSuffix: true,
       })
+      // prune older snapshots (keep only the one just written)
+      try {
+        const { blobs } = await list({ prefix: PREFIX })
+        const stale = blobs.filter((b) => b.url !== blob.url).map((b) => b.url)
+        if (stale.length) await del(stale)
+      } catch {
+        /* pruning is best-effort */
+      }
       return res.status(200).json({ ok: true, url: blob.url, count: clients.length })
     }
 
