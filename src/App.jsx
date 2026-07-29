@@ -11,10 +11,10 @@ import {
   fmtDMY,
   resolveTenure,
   LS,
-  loadClients,
   loadCounter,
   loadLast,
 } from './utils'
+import { cachedClients, fetchClients, saveClients } from './clientsApi'
 
 const AUTO_INCREMENT = true
 const DEFAULT_DESCRIPTION = 'Software Consulting Charges'
@@ -22,7 +22,7 @@ const DEFAULT_DESCRIPTION = 'Software Consulting Charges'
 export default class App extends Component {
   constructor(props) {
     super(props)
-    const clients = loadClients()
+    const clients = cachedClients()
     const counter = loadCounter()
     const last = loadLast()
     const loaded =
@@ -37,6 +37,7 @@ export default class App extends Component {
       loadedId: loaded ? loaded.id : null,
       clientName: loaded ? loaded.name : '',
       clientAddress: loaded ? loaded.address : '',
+      clientQuery: '',
       invNo: counter + 1,
       invDate: iso(new Date()),
       tenureMode: (last.tenureMode === 'custom' ? 'this' : last.tenureMode) || 'this',
@@ -51,6 +52,17 @@ export default class App extends Component {
   }
 
   componentDidMount() {
+    // pull the shared client list from the server, reconcile local edits
+    fetchClients().then(({ clients, ok }) => {
+      if (!ok) return
+      this.setState((s) => {
+        const stillThere = s.loadedId != null && clients.some((c) => c.id === s.loadedId)
+        // don't clobber a name the user is mid-typing for a brand-new client
+        const typingNew = s.loadedId == null && s.clientName.trim()
+        return { clients, loadedId: stillThere ? s.loadedId : typingNew ? null : s.loadedId }
+      })
+    })
+
     this.fit = () => {
       const s = Math.min(
         (window.innerHeight - 190) / 1123,
@@ -85,11 +97,19 @@ export default class App extends Component {
 
   persistClients(clients) {
     this.setState({ clients })
-    try {
-      localStorage.setItem(LS.clients, JSON.stringify(clients))
-    } catch {
-      /* ignore */
+    saveClients(clients).then((ok) => {
+      if (!ok) this.showToast('Saved on this device — cloud sync failed')
+    })
+  }
+
+  // save current client without moving on — for building up the client list
+  saveAndAddAnother = () => {
+    if (!this.state.clientName.trim()) {
+      this.showToast('Enter a client name first')
+      return
     }
+    this.syncClient()
+    this.setState({ loadedId: null, clientName: '', clientAddress: '' })
   }
 
   syncClient() {
@@ -160,6 +180,10 @@ export default class App extends Component {
     const totalFmt = fmtINR(s.price)
     const invNoPad = pad3(s.invNo)
     const nextDisabled = s.step === 1 && !hasName
+    const q = s.clientQuery.trim().toLowerCase()
+    const filtered = q
+      ? s.clients.filter((c) => (c.name + ' ' + (c.address || '')).toLowerCase().includes(q))
+      : s.clients
     const scaledW = Math.round(794 * s.fitScale)
     const scaledH = Math.round(1123 * s.fitScale)
 
@@ -265,7 +289,20 @@ export default class App extends Component {
 
               {s.clients.length > 0 && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  {s.clients.map((c) => {
+                  <input
+                    value={s.clientQuery}
+                    onChange={(e) => this.setState({ clientQuery: e.target.value })}
+                    placeholder={
+                      'Search ' + s.clients.length + ' client' + (s.clients.length > 1 ? 's' : '') + '…'
+                    }
+                    style={{ ...inp, fontSize: 13.5 }}
+                  />
+                  {filtered.length === 0 && (
+                    <div style={{ fontSize: 13, color: '#a89a83', padding: '6px 2px' }}>
+                      No clients match “{s.clientQuery.trim()}”.
+                    </div>
+                  )}
+                  {filtered.map((c) => {
                     const sel = c.id === s.loadedId && s.clientName === c.name
                     return (
                       <div
@@ -371,8 +408,36 @@ export default class App extends Component {
                   rows={3}
                   style={{ ...inp, fontSize: 13.5, resize: 'vertical' }}
                 />
-                <div style={{ fontSize: 11.5, color: '#a89a83' }}>
-                  New clients are saved automatically for next time.
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 12,
+                  }}
+                >
+                  <span style={{ fontSize: 11.5, color: '#a89a83' }}>
+                    Saved to all your devices. Continue also saves.
+                  </span>
+                  <button
+                    className="nav-back"
+                    onClick={this.saveAndAddAnother}
+                    disabled={!hasName}
+                    style={{
+                      flex: 'none',
+                      border: '1px solid #ddd4c4',
+                      borderRadius: 9,
+                      background: '#fff',
+                      color: '#3d3833',
+                      fontSize: 12.5,
+                      fontWeight: 600,
+                      padding: '9px 14px',
+                      cursor: hasName ? 'pointer' : 'default',
+                      opacity: hasName ? 1 : 0.45,
+                    }}
+                  >
+                    {s.loadedId != null ? 'Save changes + add another' : 'Save + add another'}
+                  </button>
                 </div>
               </div>
             </div>
