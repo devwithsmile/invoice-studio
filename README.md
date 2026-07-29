@@ -18,3 +18,5 @@ npm install
 npm run dev      # http://localhost:5173
 npm run build    # production build → dist/
 ```
+
+<!-- deployed via Vercel + GitHub auto-deploy -->
