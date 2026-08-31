@@ -13,11 +13,18 @@ import {
   LS,
   loadCounter,
   loadLast,
+  MAX_ITEMS,
+  makeItem,
+  sanitizeMode,
+  itemsFromLast,
+  sumItems,
 } from './utils'
 import { cachedClients, fetchClients, saveClients } from './clientsApi'
+import PeriodPicker from './PeriodPicker'
 
 const AUTO_INCREMENT = true
 const DEFAULT_DESCRIPTION = 'Software Consulting Charges'
+const DEFAULT_PRICE = 183333
 
 export default class App extends Component {
   constructor(props) {
@@ -40,13 +47,13 @@ export default class App extends Component {
       clientQuery: '',
       invNo: counter + 1,
       invDate: iso(new Date()),
-      tenureMode: (last.tenureMode === 'custom' ? 'this' : last.tenureMode) || 'this',
-      customStart: '',
-      customEnd: '',
-      price: last.price != null ? last.price : 183333,
-      description: last.description || DEFAULT_DESCRIPTION,
+      tenureMode: sanitizeMode(last.tenureMode, last.customStart, last.customEnd),
+      customStart: last.customStart || '',
+      customEnd: last.customEnd || '',
+      items: itemsFromLast(last, DEFAULT_DESCRIPTION, DEFAULT_PRICE),
       fitScale: 0.45,
       narrow: typeof window !== 'undefined' && window.innerWidth < 640,
+      overflowPx: 0,
       toast: null,
     }
     this.invRef = createRef()
@@ -82,9 +89,20 @@ export default class App extends Component {
   }
 
   componentDidUpdate() {
-    const { loadedId, tenureMode, price, description } = this.state
+    // A4 is a fixed box: if the rows push past it the PDF would silently clip.
+    // scrollHeight is a layout value, so the preview's scale() doesn't skew it.
+    const node = this.invRef.current
+    if (this.state.step === 3 && node) {
+      const over = Math.max(0, node.scrollHeight - node.clientHeight)
+      if (over !== this.state.overflowPx) this.setState({ overflowPx: over })
+    }
+
+    const { loadedId, tenureMode, customStart, customEnd, items } = this.state
     try {
-      localStorage.setItem(LS.last, JSON.stringify({ loadedId, tenureMode, price, description }))
+      localStorage.setItem(
+        LS.last,
+        JSON.stringify({ loadedId, tenureMode, customStart, customEnd, items })
+      )
     } catch {
       /* ignore */
     }
@@ -101,6 +119,27 @@ export default class App extends Component {
     saveClients(clients).then((ok) => {
       if (!ok) this.showToast('Saved on this device — cloud sync failed')
     })
+  }
+
+  updateItem = (id, patch) => {
+    this.setState((s) => ({
+      items: s.items.map((it) => (it.id === id ? { ...it, ...patch } : it)),
+    }))
+  }
+
+  addItem = () => {
+    if (this.state.items.length >= MAX_ITEMS) {
+      this.showToast('One A4 page fits ' + MAX_ITEMS + ' items')
+      return
+    }
+    this.setState((s) => ({ items: [...s.items, makeItem()] }))
+  }
+
+  // the invoice always keeps at least one item
+  removeItem = (id) => {
+    this.setState((s) =>
+      s.items.length > 1 ? { items: s.items.filter((it) => it.id !== id) } : null
+    )
   }
 
   // save current client without moving on — for building up the client list
@@ -141,14 +180,37 @@ export default class App extends Component {
       this.showToast('Add a client name in step 1')
       return
     }
-    const { start, end } = resolveTenure(this.state.tenureMode, this.state.customStart, this.state.customEnd)
-    if (!start || !end) {
-      this.showToast('Pick the custom billing dates in step 2')
+    const { items } = this.state
+    if (!items.length) {
+      this.showToast('Add at least one item in step 2')
       return
+    }
+    const blank = items.findIndex((it) => !it.description.trim())
+    if (blank >= 0) {
+      this.showToast('Item ' + (blank + 1) + ' needs a description')
+      return
+    }
+    const invoiceP = resolveTenure(this.state.tenureMode, this.state.customStart, this.state.customEnd)
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i]
+      const p =
+        it.tenureMode == null ? invoiceP : resolveTenure(it.tenureMode, it.customStart, it.customEnd)
+      if (!p.start || !p.end) {
+        this.showToast(
+          it.tenureMode == null
+            ? 'Pick the custom billing dates in step 2'
+            : 'Pick the custom dates for item ' + (i + 1)
+        )
+        return
+      }
     }
     const node = this.invRef.current
     if (!node) {
       this.showToast('PDF engine still loading — try again')
+      return
+    }
+    if (node.scrollHeight - node.clientHeight > 2) {
+      this.showToast('Too long for one A4 page — shorten a description or remove an item')
       return
     }
     try {
@@ -174,11 +236,24 @@ export default class App extends Component {
   render() {
     const s = this.state
     const { start, end } = resolveTenure(s.tenureMode, s.customStart, s.customEnd)
-    const tenureLabel = start && end ? shortDate(start) + ' - ' + shortDate(end) : 'Pick dates'
+    const periodLabel = (p) =>
+      p.start && p.end ? shortDate(p.start) + ' - ' + shortDate(p.end) : 'Pick dates'
+    const tenureLabel = periodLabel({ start, end })
+    // one view row per item, with its period inherited from the invoice unless overridden
+    const itemViews = s.items.map((it) => {
+      const p =
+        it.tenureMode == null ? { start, end } : resolveTenure(it.tenureMode, it.customStart, it.customEnd)
+      return {
+        id: it.id,
+        description: it.description.trim() || '—',
+        tenureLabel: periodLabel(p),
+        amountFmt: fmtINR(it.price),
+      }
+    })
     const invD = parseISO(s.invDate) || new Date()
     const invDateFmt = fmtDMY(invD)
     const hasName = !!s.clientName.trim()
-    const totalFmt = fmtINR(s.price)
+    const totalFmt = fmtINR(sumItems(s.items))
     const invNoPad = pad3(s.invNo)
     const nextDisabled = s.step === 1 && !hasName
     const q = s.clientQuery.trim().toLowerCase()
@@ -547,98 +622,201 @@ export default class App extends Component {
                     {tenureLabel}
                   </span>
                 </div>
-                <div style={{ display: 'flex', background: '#f2eee7', borderRadius: 10, padding: 3, gap: 2 }}>
-                  {[
-                    ['this', 'This month'],
-                    ['last', 'Last month'],
-                    ['next', 'Next month'],
-                    ['custom', 'Custom'],
-                  ].map(([k, label]) => {
-                    const on = s.tenureMode === k
-                    return (
-                      <button
-                        key={k}
-                        onClick={() => this.setState({ tenureMode: k })}
-                        style={{
-                          flex: 1,
-                          border: 'none',
-                          borderRadius: 8,
-                          padding: '9px 4px',
-                          fontSize: 12.5,
-                          fontWeight: 500,
-                          cursor: 'pointer',
-                          background: on ? '#fff' : 'transparent',
-                          color: on ? '#3d3833' : '#8a7c6b',
-                          boxShadow: on ? '0 1px 3px rgba(61,56,51,0.15)' : 'none',
-                        }}
-                      >
-                        {label}
-                      </button>
-                    )
-                  })}
+                <PeriodPicker
+                  mode={s.tenureMode}
+                  customStart={s.customStart}
+                  customEnd={s.customEnd}
+                  onChange={(patch) => this.setState(patch)}
+                />
+                <div style={{ fontSize: 11.5, color: '#a89a83' }}>
+                  Every item uses this period unless it sets its own.
                 </div>
-                {s.tenureMode === 'custom' && (
-                  <div style={{ display: 'flex', gap: 10 }}>
-                    <input
-                      type="date"
-                      value={s.customStart}
-                      onChange={(e) => this.setState({ customStart: e.target.value })}
-                      style={{ ...inp, flex: 1, fontSize: 13, minWidth: 0 }}
-                    />
-                    <input
-                      type="date"
-                      value={s.customEnd}
-                      onChange={(e) => this.setState({ customEnd: e.target.value })}
-                      style={{ ...inp, flex: 1, fontSize: 13, minWidth: 0 }}
-                    />
-                  </div>
-                )}
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: s.narrow ? '1fr' : '1fr 1fr', gap: 14 }}>
-                <div style={card}>
-                  <label style={lbl}>Amount</label>
-                  <div
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
+                  <label style={lbl}>Items</label>
+                  <span style={{ fontSize: 12, color: '#a89a83' }}>
+                    {s.items.length} of {MAX_ITEMS}
+                  </span>
+                </div>
+
+                {s.items.map((it, i) => {
+                  const own = it.tenureMode != null
+                  return (
+                    <div key={it.id} style={{ ...card, gap: 10 }}>
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                        }}
+                      >
+                        <span style={{ ...lbl, letterSpacing: 0.8 }}>ITEM {i + 1}</span>
+                        {s.items.length > 1 && (
+                          <button
+                            className="del-btn"
+                            onClick={() => this.removeItem(it.id)}
+                            title="Remove item"
+                            style={{
+                              width: 26,
+                              height: 26,
+                              flex: 'none',
+                              border: 'none',
+                              borderRadius: '50%',
+                              background: 'transparent',
+                              color: '#b3a291',
+                              fontSize: 15,
+                              cursor: 'pointer',
+                              lineHeight: 1,
+                            }}
+                          >
+                            ×
+                          </button>
+                        )}
+                      </div>
+                      <input
+                        value={it.description}
+                        onChange={(e) => this.updateItem(it.id, { description: e.target.value })}
+                        placeholder="Description"
+                        style={{ ...inp, fontSize: 13.5 }}
+                      />
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          border: '1px solid #ddd4c4',
+                          borderRadius: 9,
+                          background: '#fdfcfa',
+                          padding: '0 13px',
+                          gap: 8,
+                        }}
+                      >
+                        <span style={{ color: '#8a7c6b', fontSize: 15 }}>₹</span>
+                        <input
+                          type="number"
+                          min="0"
+                          value={it.price}
+                          onChange={(e) =>
+                            this.updateItem(it.id, {
+                              price: e.target.value === '' ? '' : Number(e.target.value),
+                            })
+                          }
+                          placeholder="0"
+                          style={{
+                            flex: 1,
+                            border: 'none',
+                            background: 'transparent',
+                            fontSize: 14,
+                            padding: '11px 0',
+                            width: 50,
+                            fontVariantNumeric: 'tabular-nums',
+                          }}
+                        />
+                        <span
+                          style={{
+                            fontSize: 12,
+                            color: '#8a7c6b',
+                            fontVariantNumeric: 'tabular-nums',
+                          }}
+                        >
+                          {fmtINR(it.price)}
+                        </span>
+                      </div>
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          gap: 10,
+                        }}
+                      >
+                        <span
+                          style={{
+                            fontSize: 12,
+                            color: '#8a7c6b',
+                            minWidth: 0,
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                            fontVariantNumeric: 'tabular-nums',
+                          }}
+                        >
+                          {own ? 'Own period' : 'Invoice period'} · {itemViews[i].tenureLabel}
+                        </span>
+                        <button
+                          className="nav-back"
+                          onClick={() =>
+                            this.updateItem(
+                              it.id,
+                              own
+                                ? { tenureMode: null }
+                                : {
+                                    tenureMode: s.tenureMode,
+                                    customStart: s.customStart,
+                                    customEnd: s.customEnd,
+                                  }
+                            )
+                          }
+                          style={{
+                            flex: 'none',
+                            border: '1px solid #ddd4c4',
+                            borderRadius: 9,
+                            background: '#fff',
+                            color: '#3d3833',
+                            fontSize: 12,
+                            fontWeight: 600,
+                            padding: '7px 12px',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          {own ? 'Use invoice period' : 'Set own period'}
+                        </button>
+                      </div>
+                      {own && (
+                        <PeriodPicker
+                          small
+                          mode={it.tenureMode}
+                          customStart={it.customStart}
+                          customEnd={it.customEnd}
+                          onChange={(patch) => this.updateItem(it.id, patch)}
+                        />
+                      )}
+                    </div>
+                  )
+                })}
+
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 12,
+                  }}
+                >
+                  <button
+                    className="step-btn"
+                    onClick={this.addItem}
+                    disabled={s.items.length >= MAX_ITEMS}
                     style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      border: '1px solid #ddd4c4',
-                      borderRadius: 9,
-                      background: '#fdfcfa',
-                      padding: '0 13px',
-                      gap: 8,
+                      border: '1px dashed #cbc0ae',
+                      borderRadius: 10,
+                      background: 'transparent',
+                      color: '#3d3833',
+                      fontSize: 13,
+                      fontWeight: 600,
+                      padding: '11px 16px',
+                      cursor: s.items.length >= MAX_ITEMS ? 'default' : 'pointer',
+                      opacity: s.items.length >= MAX_ITEMS ? 0.45 : 1,
                     }}
                   >
-                    <span style={{ color: '#8a7c6b', fontSize: 15 }}>₹</span>
-                    <input
-                      type="number"
-                      min="0"
-                      value={s.price}
-                      onChange={(e) =>
-                        this.setState({ price: e.target.value === '' ? '' : Number(e.target.value) })
-                      }
-                      style={{
-                        flex: 1,
-                        border: 'none',
-                        background: 'transparent',
-                        fontSize: 14,
-                        padding: '11px 0',
-                        width: 50,
-                        fontVariantNumeric: 'tabular-nums',
-                      }}
-                    />
-                  </div>
-                  <div style={{ fontSize: 12, color: '#8a7c6b', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
-                    ₹ {totalFmt}
-                  </div>
-                </div>
-                <div style={card}>
-                  <label style={lbl}>Description</label>
-                  <input
-                    value={s.description}
-                    onChange={(e) => this.setState({ description: e.target.value })}
-                    style={{ ...inp, fontSize: 13.5 }}
-                  />
+                    + Add item
+                  </button>
+                  <span
+                    style={{ fontSize: 13.5, fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}
+                  >
+                    Total ₹ {totalFmt}
+                  </span>
                 </div>
               </div>
             </div>
@@ -659,6 +837,23 @@ export default class App extends Component {
               padding: '0 24px',
             }}
           >
+            {s.overflowPx > 0 && (
+              <div
+                style={{
+                  flex: 'none',
+                  marginBottom: 10,
+                  maxWidth: scaledW,
+                  background: '#fdf3e7',
+                  border: '1px solid #e6c9a1',
+                  borderRadius: 9,
+                  padding: '9px 13px',
+                  fontSize: 12.5,
+                  color: '#8a6a3b',
+                }}
+              >
+                This invoice runs past one A4 page — shorten a description or remove an item.
+              </div>
+            )}
             <div style={{ width: scaledW, height: scaledH, flex: 'none' }}>
               <InvoicePreview
                 ref={this.invRef}
@@ -667,8 +862,7 @@ export default class App extends Component {
                 invDateFmt={invDateFmt}
                 clientNameShow={s.clientName.trim() || '—'}
                 clientAddress={s.clientAddress}
-                description={s.description}
-                tenureLabel={tenureLabel}
+                items={itemViews}
                 totalFmt={totalFmt}
               />
             </div>
