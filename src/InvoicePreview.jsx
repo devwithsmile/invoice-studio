@@ -3,10 +3,15 @@ import { forwardRef } from 'react'
 // The invoice document — ported from Claude Design "Invoice Studio v3" (step 3).
 // Fixed 794x1123 (A4 @96dpi). `scale` is applied on the root; App resets it to
 // none during PDF capture. Sender block is hardcoded.
+// `items` is [{ id, description, tenureLabel, amountFmt }] — one table row each.
 const InvoicePreview = forwardRef(function InvoicePreview(
-  { scale, invNoPad, invDateFmt, clientNameShow, clientAddress, description, tenureLabel, totalFmt },
+  { scale, invNoPad, invDateFmt, clientNameShow, clientAddress, items, totalFmt },
   ref
 ) {
+  // long lists get tighter rows so they still land on one A4 page
+  const dense = items.length > 5
+  const rowPad = dense ? '8px 14px' : '13px 14px'
+  const rowFont = dense ? 11.5 : 12.5
   return (
     <div
       ref={ref}
@@ -98,20 +103,29 @@ const InvoicePreview = forwardRef(function InvoicePreview(
             <div style={{ textAlign: 'right' }}>PRICE</div>
             <div style={{ textAlign: 'right' }}>TOTAL</div>
           </div>
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: '2.2fr 1.6fr 0.9fr 0.9fr',
-              fontSize: 12.5,
-              padding: '16px 14px',
-              gap: 12,
-              borderBottom: '2.5px solid #3d3833',
-            }}
-          >
-            <div>{description}</div>
-            <div>{tenureLabel}</div>
-            <div style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{totalFmt}</div>
-            <div style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{totalFmt}</div>
+          <div style={{ borderBottom: '2.5px solid #3d3833' }}>
+            {items.map((it, i) => (
+              <div
+                key={it.id}
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: '2.2fr 1.6fr 0.9fr 0.9fr',
+                  fontSize: rowFont,
+                  padding: rowPad,
+                  gap: 12,
+                  borderTop: i ? '1px solid #ece5d8' : 'none',
+                }}
+              >
+                <div>{it.description}</div>
+                <div>{it.tenureLabel}</div>
+                <div style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                  {it.amountFmt}
+                </div>
+                <div style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                  {it.amountFmt}
+                </div>
+              </div>
+            ))}
           </div>
           <div
             style={{
